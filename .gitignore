@@ -1,3 +1,4 @@
 /server
 /bin
 .env
+.DS_Store
