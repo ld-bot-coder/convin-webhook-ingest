@@ -56,10 +56,12 @@ Alternatives I rejected:
 - **Unique constraint for dedup only.** Idempotent writes, but the aggregate is
   still maintained separately and can still drift from `calls`.
 
-Redis is kept as a cache *in front of* the real check: the key is written only
-after commit, so a hit means the event is genuinely durable and Postgres can be
-skipped; a miss proves nothing and falls through; every error fails open, so a
-dead Redis costs latency, not correctness (`TestIngestSurvivesRedisOutage`).
+I did build the Redis fast path — key written only after commit, misses falling
+through — and then took it out. It is safe in production, but it creates state
+nothing cleans up: the test harness resets Postgres per account while Redis
+keeps the key for its TTL, so the same `event_id` posted again after a reset is
+silently skipped and the suite stops being repeatable. The saving is one indexed
+lookup. Not worth a second place where "have I seen this?" is answered.
 
 Counting is idempotent by construction: `call_count` moves only when the call
 row is created, and a repeat event adjusts duration by the difference. The
@@ -78,8 +80,9 @@ Today every delivery is a synchronous transaction, serialised per account on the
 - **Stop writing a row per event**: aggregate in windows, or treat
   `account_stats` as a rollup over append-only per-call rows. Removes the
   per-account lock from the hot path.
-- **Dedup in Redis first**, with the constraint as the correctness backstop —
-  it becomes a capacity decision, not a correctness one.
+- **Dedup in Redis first**, with the constraint as the correctness backstop, so
+  it becomes a capacity decision rather than a correctness one — at that volume
+  it earns the extra moving part it does not earn today.
 - **Batch** several deliveries per account into one transaction.
 - **Make recording work a durable queue**, not goroutines.
 

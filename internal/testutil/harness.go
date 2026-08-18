@@ -79,9 +79,8 @@ func NewServer(t *testing.T) (*httptest.Server, *store.Store) {
 	return srv, s
 }
 
-// NewService builds an ingest.Service wired to the configured Postgres and
-// Redis, without an HTTP server in front of it. Tests that need to drive the
-// service lifecycle directly - shutdown, for instance - use this.
+// NewService bina HTTP server ke ingest.Service deta hai, un tests ke liye jo
+// lifecycle khud drive karte hain (jaise shutdown).
 func NewService(t *testing.T) (*ingest.Service, *store.Store) {
 	t.Helper()
 	cfg := config.Load()

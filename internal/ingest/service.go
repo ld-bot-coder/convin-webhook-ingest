@@ -16,15 +16,9 @@ import (
 
 const (
 	// recordingWork stands in for downloading and transcoding a recording.
-	recordingWork = 50 * time.Millisecond
-	// recordingTimeout bounds that work once it is off the request context.
+	recordingWork    = 50 * time.Millisecond
 	recordingTimeout = 30 * time.Second
-	// statsReadTimeout bounds the read-through to Postgres on a cache miss.
 	statsReadTimeout = 2 * time.Second
-	// dedupKeyTTL is how long Redis remembers an event. It only has to cover
-	// the window in which the provider still retries, not forever - Postgres
-	// keeps the permanent record.
-	dedupKeyTTL = 24 * time.Hour
 )
 
 // Service ingests webhook deliveries.
@@ -34,8 +28,8 @@ type Service struct {
 	rdb   *redis.Client
 	log   *slog.Logger
 
-	// mu guards closed and the Add side of inFlight, so that shutdown and a
-	// late delivery cannot race over whether work is still being accepted.
+	// mu closed aur inFlight.Add ko guard karta hai, taki shutdown aur late
+	// delivery ke beech race na ho.
 	mu       sync.Mutex
 	closed   bool
 	inFlight sync.WaitGroup
@@ -48,10 +42,8 @@ func New(s *store.Store, c *stats.Cache, rdb *redis.Client, log *slog.Logger) *S
 
 // Stats returns the totals for an account.
 //
-// The in-memory aggregate only knows about ingests this process handled, so on
-// a miss it reads through to Postgres and caches the answer. Without that, a
-// process that has just come up after a deploy reports zero for every account
-// until new webhooks happen to arrive for it.
+// Cache me sirf isi process ke ingests hote hain, isliye miss par Postgres se
+// padh ke cache karte hain. Warna deploy ke baad har account zero dikhta hai.
 func (s *Service) Stats(accountID string) stats.AccountStats {
 	if st, ok := s.cache.Lookup(accountID); ok {
 		return st
@@ -77,16 +69,8 @@ func (s *Service) Stats(accountID string) stats.AccountStats {
 // Ingest stores a delivery and kicks off processing. Processing runs
 // asynchronously so the provider gets a fast acknowledgement.
 //
-// The provider delivers at least once, so this is idempotent on event_id:
-// storing the event, updating the call, and folding it into the account
-// aggregate all happen in one transaction that only one delivery of a given
-// event can win.
+// Provider at-least-once bhejta hai, to yeh event_id par idempotent hai.
 func (s *Service) Ingest(ctx context.Context, evt Event) error {
-	if s.seenRecently(ctx, evt.EventID) {
-		s.log.Info("duplicate delivery ignored (redis)", "event_id", evt.EventID)
-		return nil
-	}
-
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return err
@@ -108,24 +92,18 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 		return err
 	}
 
-	// Postgres just told us the committed totals, so the cache is refreshed
-	// from those rather than incremented independently. The two cannot drift.
+	// Totals wahi jo transaction ne commit kiye, alag se increment nahi -
+	// isliye cache aur DB drift nahi kar sakte.
 	s.cache.Set(rec.AccountID, stats.AccountStats{
 		CallCount:        res.Stats.CallCount,
 		TotalDurationSec: res.Stats.TotalDurationSec,
 	})
-
-	// Only after the transaction has committed. A key written any earlier
-	// could wave through a redelivery of an event whose transaction went on to
-	// fail, losing it for good.
-	s.markSeen(ctx, rec.EventID)
 
 	if res.Duplicate {
 		s.log.Info("duplicate delivery ignored", "event_id", rec.EventID, "call_id", rec.CallID)
 		return nil
 	}
 
-	// Recordings are slow to fetch, so that part does not block the provider.
 	if rec.RecordingURL != "" {
 		s.startRecordingWork(ctx, rec)
 	}
@@ -133,15 +111,13 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 	return nil
 }
 
-// startRecordingWork runs the recording pipeline off the request path while
-// keeping it accounted for, so that shutdown can wait for it.
+// startRecordingWork recording ko request path se hata deta hai, par count me
+// rakhta hai taki shutdown uska wait kar sake.
 func (s *Service) startRecordingWork(ctx context.Context, rec store.Event) {
 	work := func() {
-		// Detach from the request context but keep its values. net/http
-		// cancels the request context the moment the handler returns, so the
-		// UPDATE at the end of this work used to be refused with
-		// "context canceled" - and the error was discarded, which is why
-		// nothing about it ever reached the logs.
+		// Request ctx se detach, values rakh ke. net/http handler return hote
+		// hi request ctx cancel kar deta hai - isi wajah se aakhri UPDATE
+		// "context canceled" se fail hota tha.
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordingTimeout)
 		defer cancel()
 
@@ -153,8 +129,7 @@ func (s *Service) startRecordingWork(ctx context.Context, rec store.Event) {
 
 	s.mu.Lock()
 	if s.closed {
-		// Shutting down: nothing will be left to wait for this goroutine, so
-		// run it inline rather than dropping the work on the floor.
+		// Shutdown chalu hai, koi wait karne wala nahi bacha - inline chala do.
 		s.mu.Unlock()
 		work()
 		return
@@ -168,9 +143,8 @@ func (s *Service) startRecordingWork(ctx context.Context, rec store.Event) {
 	}()
 }
 
-// Shutdown stops accepting new background work and waits for what is already
-// running, so that a deploy does not discard recordings that are mid-flight.
-// It returns ctx.Err() if the wait does not finish in time.
+// Shutdown naya background work lena band karta hai aur jo chal raha hai uska
+// wait karta hai, taki deploy par mid-flight recordings na chhoot jaayein.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.closed = true
@@ -199,40 +173,4 @@ func (s *Service) processRecording(ctx context.Context, rec store.Event) error {
 		return ctx.Err()
 	}
 	return s.store.MarkRecordingProcessed(ctx, rec.CallID)
-}
-
-// dedupKey namespaces the idempotency keys.
-func dedupKey(eventID string) string { return "dedup:event:" + eventID }
-
-// seenRecently asks Redis whether this event has already been committed.
-//
-// Redis is a cache in front of the real check, never the check itself. A hit
-// is trustworthy because the key is only written after the transaction
-// commits, so it means the event is durably stored. A miss proves nothing -
-// keys expire, get evicted, and vanish when Redis restarts - so it falls
-// through to Postgres, where the unique constraint gives the real answer.
-// Every Redis error therefore fails open rather than rejecting a delivery.
-func (s *Service) seenRecently(ctx context.Context, eventID string) bool {
-	if s.rdb == nil {
-		return false
-	}
-	n, err := s.rdb.Exists(ctx, dedupKey(eventID)).Result()
-	if err != nil {
-		s.log.Warn("redis dedup lookup failed, falling through to postgres",
-			"event_id", eventID, "err", err)
-		return false
-	}
-	return n > 0
-}
-
-// markSeen records a committed event so later redeliveries can be answered
-// without touching Postgres. Failing to write it costs a database round trip
-// on the next retry and nothing else, so the error is logged, not returned.
-func (s *Service) markSeen(ctx context.Context, eventID string) {
-	if s.rdb == nil {
-		return
-	}
-	if err := s.rdb.Set(ctx, dedupKey(eventID), "1", dedupKeyTTL).Err(); err != nil {
-		s.log.Warn("redis dedup write failed", "event_id", eventID, "err", err)
-	}
 }

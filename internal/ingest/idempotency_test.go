@@ -15,8 +15,8 @@ import (
 	"github.com/convin/webhook-ingest/internal/testutil"
 )
 
-// waitFor polls cond until it returns true or the deadline passes. Recording
-// processing is asynchronous, so tests have to give it a moment to land.
+// waitFor cond ko poll karta hai. Recording async hai isliye thoda time dena
+// padta hai.
 func waitFor(t *testing.T, within time.Duration, cond func() bool) bool {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -29,14 +29,9 @@ func waitFor(t *testing.T, within time.Duration, cond func() bool) bool {
 	return cond()
 }
 
-// TestConcurrentRedeliveriesAreCountedOnce reproduces the duplicate records and
-// inflated call-counts operations reported.
-//
-// The provider delivers at least once and retries aggressively, so the same
-// event_id can be in flight several times at once. "Does it exist yet?"
-// followed by "insert it" is not atomic: every concurrent delivery reads
-// "absent" before any of them has written, so all of them insert and all of
-// them increment the aggregate.
+// Duplicate records aur inflated counts wala symptom. EventExists ke baad
+// InsertEvent atomic nahi hai: saari parallel deliveries "absent" padhti hain
+// aur sab insert kar deti hain. Fix se pehle fail hota hai.
 func TestConcurrentRedeliveriesAreCountedOnce(t *testing.T) {
 	srv, st := testutil.NewServer(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -45,14 +40,12 @@ func TestConcurrentRedeliveriesAreCountedOnce(t *testing.T) {
 	const deliveries = 16
 	body := eventJSON(eventID, callID, accountID)
 
-	// Warm the pgx pool. It opens connections lazily, so an unwarmed pool
-	// serialises the first burst behind connection setup and hides the race.
+	// pgx pool lazily connections kholta hai; warm na karo to pehla burst
+	// connection setup ke peeche serialise ho jata hai aur race chhup jati hai.
 	warmPool(t, st, deliveries)
 
-	// Each goroutine warms its own keep-alive connection first and then waits
-	// at the barrier, so the deliveries actually overlap instead of being
-	// staggered by connection setup. Without this the race is real but only
-	// shows up intermittently.
+	// Har goroutine apna connection warm karke barrier par rukti hai, tabhi
+	// deliveries sach me overlap hoti hain.
 	start := make(chan struct{})
 	var ready, done sync.WaitGroup
 	codes := make([]int, deliveries)
@@ -98,8 +91,7 @@ func TestConcurrentRedeliveriesAreCountedOnce(t *testing.T) {
 	}
 }
 
-// TestSequentialRedeliveriesAreCountedOnce is the uncontended version of the
-// same guarantee: the provider redelivers even after a 200.
+// Wahi guarantee bina contention ke: provider 200 ke baad bhi redeliver karta hai.
 func TestSequentialRedeliveriesAreCountedOnce(t *testing.T) {
 	srv, st := testutil.NewServer(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -126,12 +118,9 @@ func TestSequentialRedeliveriesAreCountedOnce(t *testing.T) {
 	}
 }
 
-// TestMultipleEventsForOneCallCountAsOneCall covers the other half of the
-// inflated-counts report: call_count is meant to track calls, but it is
-// incremented once per accepted *event*. Two distinct events about the same
-// call (a correction, a late status update) leave one row in `calls` and two
-// in the aggregate, which is exactly "counts drifting higher than the actual
-// number of calls".
+// Inflated counts ka doosra half: call_count calls ginna chahiye par har
+// accepted event par badhta tha. Ek hi call ke do events = calls me ek row,
+// aggregate me do.
 func TestMultipleEventsForOneCallCountAsOneCall(t *testing.T) {
 	srv, st := testutil.NewServer(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -167,13 +156,9 @@ func TestMultipleEventsForOneCallCountAsOneCall(t *testing.T) {
 	}
 }
 
-// TestRecordingIsMarkedProcessed reproduces "calls are landing but their
-// recordings never get marked processed, and there is nothing in the logs".
-//
-// The recording work is handed to a goroutine that keeps using the *request*
-// context. net/http cancels that context the moment the handler returns, so
-// the UPDATE 50ms later is refused with "context canceled" — and the error is
-// dropped on the floor by an empty error branch, so nothing is logged.
+// "Recordings kabhi processed mark nahi hoti aur logs me kuch nahi" wala
+// symptom. Goroutine request ctx use karti thi, jo handler return par cancel
+// ho jata hai, aur error empty branch me gir jata tha.
 func TestRecordingIsMarkedProcessed(t *testing.T) {
 	srv, st := testutil.NewServer(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -196,10 +181,8 @@ func TestRecordingIsMarkedProcessed(t *testing.T) {
 	}
 }
 
-// TestStatsSurviveProcessRestart checks the read path against the durable
-// numbers. The in-memory aggregate is only ever written by ingests handled by
-// the current process, so a fresh process reports zero for accounts that
-// plainly have calls in Postgres.
+// Read path durable numbers ke against. Cache sirf isi process ke ingests se
+// bharta hai, to naya process har account ke liye zero bolta tha.
 func TestStatsSurviveProcessRestart(t *testing.T) {
 	before, st := testutil.NewServer(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -208,8 +191,7 @@ func TestStatsSurviveProcessRestart(t *testing.T) {
 		t.Fatalf("got %d, want 200", resp.StatusCode)
 	}
 
-	// A second server stands in for the process that comes up after a deploy:
-	// same database, empty in-memory cache.
+	// Doosra server = deploy ke baad wala process: same DB, khali cache.
 	after, _ := testutil.NewServer(t)
 
 	got := statsEndpoint(t, after.URL, accountID)
@@ -239,7 +221,7 @@ func statsEndpoint(t *testing.T, baseURL, accountID string) statsResponse {
 	return out
 }
 
-// eventJSONWithDuration builds a payload with an explicit duration.
+// eventJSONWithDuration explicit duration ke saath payload banata hai.
 func eventJSONWithDuration(eventID, callID, accountID string, durationSec int) string {
 	return fmt.Sprintf(`{
 	  "event_id":      %q,
@@ -252,7 +234,7 @@ func eventJSONWithDuration(eventID, callID, accountID string, durationSec int) s
 	}`, eventID, callID, accountID, durationSec, callID)
 }
 
-// warmPool forces the connection pool to open n connections up front.
+// warmPool pool se n connections pehle hi khulwa deta hai.
 func warmPool(t *testing.T, st *store.Store, n int) {
 	t.Helper()
 	ctx := context.Background()

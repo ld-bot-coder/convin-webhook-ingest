@@ -1,9 +1,5 @@
 // Package stats keeps a hot-path, in-memory view of per-account call totals.
-//
-// The durable copy of these numbers lives in Postgres; this cache exists so
-// the stats endpoint does not hit the database on every read. Postgres stays
-// the source of truth: the cache is only ever fed snapshots that the database
-// has already committed.
+// Durable copy Postgres me hai, yeh sirf read ko sasta karta hai.
 package stats
 
 import "sync"
@@ -14,7 +10,7 @@ type AccountStats struct {
 	TotalDurationSec int64
 }
 
-// Cache holds per-account running totals. It is safe for concurrent use.
+// Cache holds per-account running totals. Safe for concurrent use.
 type Cache struct {
 	mu sync.RWMutex
 	m  map[string]AccountStats
@@ -31,10 +27,8 @@ func (c *Cache) Get(accountID string) AccountStats {
 	return s
 }
 
-// Lookup returns an account's totals and reports whether the account was
-// cached at all. Callers use the flag to tell "no calls yet" apart from
-// "this process has never seen this account", which is the difference between
-// answering zero and reading through to Postgres.
+// Lookup batata hai account cached tha ya nahi. "zero calls" aur "kabhi dekha
+// hi nahi" me farq karne ke liye - dusre case me Postgres se padhna padta hai.
 func (c *Cache) Lookup(accountID string) (AccountStats, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -54,15 +48,10 @@ func (c *Cache) Record(accountID string, durationSec int) {
 	c.m[accountID] = s
 }
 
-// Set replaces an account's totals with an authoritative snapshot — the
-// numbers Postgres returned when it committed the aggregate.
-//
-// Ingests for one account commit in an order the service does not control, so
-// a goroutine can arrive holding an older snapshot than one already cached.
-// call_count never decreases, so a snapshot with a lower count is stale and is
-// dropped rather than allowed to walk the cache backwards. Equal counts are
-// applied, because a correction to an existing call changes the duration
-// without changing the count.
+// Set overwrites totals with a snapshot Postgres already commit kar chuka hai.
+// Ingests kis order me commit honge pata nahi, isliye purana snapshot (kam
+// call_count) drop kar dete hain. Barabar count matlab duration correction hai,
+// woh apply hota hai.
 func (c *Cache) Set(accountID string, s AccountStats) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

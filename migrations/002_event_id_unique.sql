@@ -1,19 +1,16 @@
--- event_id is the provider's idempotency key: it is stable across
--- redeliveries. 001 indexed it but never constrained it, so nothing in the
--- database stopped the same event being stored twice - the service could only
--- dedupe by reading before writing, which two concurrent deliveries both win.
---
--- Making it UNIQUE moves the decision into Postgres, where it is atomic:
--- exactly one concurrent INSERT succeeds and the rest conflict.
+-- event_id provider ki idempotency key hai aur redeliveries me stable rehti
+-- hai. 001 ne ise index to kiya par constraint nahi lagaya, isliye same event
+-- do baar store ho sakta tha - app ko read-before-write karna padta tha, jo do
+-- parallel deliveries dono jeet leti hain. UNIQUE karne se faisla Postgres ka
+-- ho jata hai aur woh atomic hai.
 
--- Collapse anything a running instance already duplicated, keeping the copy
--- that arrived first.
+-- Jo pehle se duplicate pade hain unhe hata do, sabse pehla wala rakh ke.
 DELETE FROM events a
       USING events b
       WHERE a.event_id = b.event_id
         AND a.id > b.id;
 
--- The unique constraint creates its own index, so the plain one is redundant.
+-- Unique constraint apna index khud banata hai, plain wala redundant hai.
 DROP INDEX IF EXISTS idx_events_event_id;
 
 DO $$
@@ -26,6 +23,5 @@ BEGIN
 END
 $$;
 
--- The aggregate is rebuilt per account and the test harness cleans up by
--- account, both of which scan calls by account_id.
+-- Test harness account ke hisaab se cleanup karta hai, yeh us scan ke liye.
 CREATE INDEX IF NOT EXISTS idx_calls_account_id ON calls (account_id);

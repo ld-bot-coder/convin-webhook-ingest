@@ -29,9 +29,8 @@ func main() {
 	}
 }
 
-// run owns the service lifecycle. It exists so that every cleanup path is a
-// defer that actually runs; calling os.Exit from main (or worse, from the
-// listener goroutine, as this used to) skips deferred cleanup entirely.
+// run se lifecycle chalti hai taki har cleanup defer actually chale. Pehle
+// listener goroutine se hi os.Exit ho jata tha, jo saare defers skip kar deta.
 func run(log *slog.Logger) error {
 	cfg := config.Load()
 	ctx := context.Background()
@@ -75,10 +74,9 @@ func run(log *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	// Order matters. Stop accepting deliveries first so nothing new can start
-	// recording work, then drain the work that deliveries already started.
-	// Draining first would let a request that is still in flight queue more
-	// work behind the drain.
+	// Order matters: pehle deliveries lena band karo, phir jo work chal raha
+	// hai use drain karo. Ulta karne par in-flight request drain ke baad bhi
+	// naya work laga sakti hai.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("http shutdown", "err", err)
 	}

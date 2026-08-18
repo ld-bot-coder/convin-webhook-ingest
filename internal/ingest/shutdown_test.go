@@ -9,16 +9,9 @@ import (
 	"github.com/convin/webhook-ingest/internal/testutil"
 )
 
-// TestShutdownDrainsInFlightRecordingWork covers the last symptom: "every time
-// we deploy, whatever was in flight seems to just disappear".
-//
-// Recording work was handed to a bare goroutine that nothing tracked. On
-// SIGTERM the HTTP server drained its handlers and the process exited straight
-// afterwards, so any recording still being processed died with it - silently,
-// and with the event already stored, so the provider never retried it.
-//
-// The assertion is deliberately made with no polling: once Shutdown returns,
-// the work must already be done.
+// "Deploy par in-flight kaam gayab ho jata hai" wala symptom. Goroutine ko
+// koi track nahi karta tha, SIGTERM par process turant exit ho jata tha.
+// Yahan polling jaan bujh ke nahi hai: Shutdown lautte hi kaam ho chuka ho.
 func TestShutdownDrainsInFlightRecordingWork(t *testing.T) {
 	svc, st := testutil.NewService(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
@@ -53,10 +46,8 @@ func TestShutdownDrainsInFlightRecordingWork(t *testing.T) {
 	}
 }
 
-// TestIngestAfterShutdownStillCompletesItsWork guards the edge the drain
-// creates: a delivery that arrives once shutdown has begun has nothing left to
-// wait for it, so it runs its recording work inline rather than handing it to
-// a goroutine nobody will drain.
+// Drain ka edge case: shutdown shuru hone ke baad aayi delivery ka koi wait
+// karne wala nahi bacha, to woh apna kaam inline karti hai.
 func TestIngestAfterShutdownStillCompletesItsWork(t *testing.T) {
 	svc, st := testutil.NewService(t)
 	eventID, callID, accountID := testutil.IDs(t, st)

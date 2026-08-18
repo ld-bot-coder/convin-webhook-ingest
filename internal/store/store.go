@@ -130,31 +130,21 @@ func (s *Store) AccountStats(ctx context.Context, accountID string) (Stats, erro
 	return st, nil
 }
 
-// IngestResult reports what one delivery actually changed.
+// IngestResult reports what one delivery changed.
 type IngestResult struct {
-	// Duplicate is true when this event_id had already been ingested, in
-	// which case the delivery changed nothing.
+	// Duplicate true matlab yeh event_id pehle hi aa chuka tha.
 	Duplicate bool
-	// NewCall is true when the delivery created the call row rather than
-	// correcting one that already existed.
-	NewCall bool
-	// Stats holds the account's durable totals as of this transaction.
+	// Stats are the account's durable totals as of this transaction.
 	Stats Stats
 }
 
-// IngestEvent records one delivery and folds it into the account aggregate in
-// a single transaction, exactly once per event_id.
+// IngestEvent ek delivery ko store karta hai aur aggregate update karta hai,
+// ek hi transaction me, per event_id exactly once.
 //
-// The three writes used to be independent statements against the pool, which
-// left two holes. Any of them could fail after an earlier one had committed,
-// stranding a stored event whose totals were never updated - and because the
-// event was stored, every retry the provider sent was then discarded as a
-// duplicate, so the aggregate never caught up. And the "have I seen this
-// event?" read was separate from the insert that answered it, so overlapping
-// redeliveries all read "absent" and all wrote.
-//
-// Both are closed here: one transaction, and the dedupe decision delegated to
-// the unique constraint on events.event_id.
+// Pehle teeno writes alag alag chal rahe the: beech me fail hone par event
+// store ho jata tha par totals update nahi hote the, aur uske baad har retry
+// duplicate maan ke drop ho jati thi - to aggregate kabhi catch up nahi karta.
+// Dedup ka faisla ab events.event_id ke unique constraint ka hai.
 func (s *Store) IngestEvent(ctx context.Context, e Event) (IngestResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -167,8 +157,6 @@ func (s *Store) IngestEvent(ctx context.Context, e Event) (IngestResult, error) 
 		return IngestResult{}, err
 	}
 	if !claimed {
-		// Someone already ingested this event. Report the totals as they
-		// stand so the caller can still refresh its cache from them.
 		st, err := readAccountStats(ctx, tx, e.AccountID)
 		if err != nil {
 			return IngestResult{}, err
@@ -179,10 +167,8 @@ func (s *Store) IngestEvent(ctx context.Context, e Event) (IngestResult, error) 
 		return IngestResult{Duplicate: true, Stats: st}, nil
 	}
 
-	// Take the account's aggregate row lock before reading the call. Ingests
-	// for one account are serialised from here to commit, which is what makes
-	// the read-then-write on `calls` below safe: no other delivery for this
-	// account can slip between them.
+	// Account row ka lock pehle lo. Isse ek account ki ingests yahan se commit
+	// tak serialise ho jati hain, tabhi neeche ka read-then-write safe hai.
 	if _, err := lockAccountStats(ctx, tx, e.AccountID); err != nil {
 		return IngestResult{}, err
 	}
@@ -199,9 +185,8 @@ func (s *Store) IngestEvent(ctx context.Context, e Event) (IngestResult, error) 
 		return IngestResult{}, err
 	}
 
-	// call_count counts calls, not events. A second event about a call that
-	// already exists is a correction: it adjusts the duration by the
-	// difference and leaves the count alone.
+	// call_count calls ginta hai, events nahi. Purane call ka dobara event aaye
+	// to woh correction hai: sirf duration ka difference lagta hai.
 	countDelta, durationDelta := 0, e.DurationSec-prevDuration
 	if isNewCall {
 		countDelta, durationDelta = 1, e.DurationSec
@@ -222,13 +207,12 @@ func (s *Store) IngestEvent(ctx context.Context, e Event) (IngestResult, error) 
 	if err := tx.Commit(ctx); err != nil {
 		return IngestResult{}, err
 	}
-	return IngestResult{NewCall: isNewCall, Stats: st}, nil
+	return IngestResult{Stats: st}, nil
 }
 
-// claimEvent stores the delivery and reports whether this caller is the one
-// that stored it. The unique constraint on event_id is the atomic dedupe
-// point: of any number of concurrent deliveries of one event, exactly one
-// INSERT lands and the rest come back empty.
+// claimEvent event store karta hai aur batata hai ki isi caller ne store kiya.
+// Unique constraint hi atomic dedup point hai: kitni bhi parallel deliveries
+// ho, INSERT sirf ek ka lagta hai, baaki ko zero rows milte hain.
 func claimEvent(ctx context.Context, tx pgx.Tx, e Event) (bool, error) {
 	var id int64
 	err := tx.QueryRow(ctx,
@@ -246,13 +230,10 @@ func claimEvent(ctx context.Context, tx pgx.Tx, e Event) (bool, error) {
 	return true, nil
 }
 
-// lockAccountStats returns the account's aggregate row, creating it if this is
-// the account's first call, and holds a row lock on it until the transaction
-// ends.
+// lockAccountStats aggregate row return karta hai (nahi hai to bana ke) aur
+// transaction khatam hone tak uska row lock rakhta hai.
 //
-// The no-op DO UPDATE is deliberate: ON CONFLICT DO NOTHING would return no
-// row and take no lock, whereas assigning the column to itself locks the
-// existing row and returns it in the same round trip.
+// No-op DO UPDATE jaan bujh ke hai: DO NOTHING na row deta hai na lock leta.
 func lockAccountStats(ctx context.Context, tx pgx.Tx, accountID string) (Stats, error) {
 	var st Stats
 	err := tx.QueryRow(ctx,
@@ -264,7 +245,7 @@ func lockAccountStats(ctx context.Context, tx pgx.Tx, accountID string) (Stats, 
 	return st, err
 }
 
-// readAccountStats reads the aggregate inside a transaction without locking it.
+// readAccountStats reads the aggregate inside a transaction, bina lock liye.
 func readAccountStats(ctx context.Context, tx pgx.Tx, accountID string) (Stats, error) {
 	var st Stats
 	err := tx.QueryRow(ctx,

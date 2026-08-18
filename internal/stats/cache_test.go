@@ -25,14 +25,9 @@ func TestCacheRecordAccumulates(t *testing.T) {
 	}
 }
 
-// TestCacheRecordIsSafeUnderConcurrency drives Record from many goroutines,
-// which is how it is really used: one call per in-flight webhook.
-//
-// Get takes the read lock but Record takes no lock at all, so the map write
-// and the two counter increments race. Under `go test -race` this reports a
-// data race; without it the increments are simply lost, which is one of the
-// ways the dashboard numbers drift. Concurrent writes to the map itself can
-// also take the whole process down with a fatal "concurrent map writes".
+// Record ko bahut goroutines se chalata hai, jaise asli use hai (ek call per
+// in-flight webhook). Get read lock leta tha, Record kuch bhi nahi - to
+// increments gum ho jate the aur map write race karta tha.
 func TestCacheRecordIsSafeUnderConcurrency(t *testing.T) {
 	c := stats.NewCache()
 
