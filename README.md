@@ -5,6 +5,15 @@ stores them, and updates per-account call statistics.
 
 It is in production. It is misbehaving.
 
+> **Submission note.** The defects are diagnosed and fixed; see
+> [SOLUTION.md](SOLUTION.md) for what was wrong, why the deduplication is done
+> the way it is, and what would change at 10k webhooks/sec.
+>
+> `migrations/002_event_id_unique.sql` adds the `UNIQUE` constraint the
+> deduplication relies on. Postgres applies migrations only on the first start
+> of an empty volume, so on an existing volume run `make reset` before
+> `go test ./...`. The suite is also clean under `go test ./... -race`.
+
 ## The incident
 
 Last week operations filed this:
