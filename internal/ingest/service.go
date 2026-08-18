@@ -21,6 +21,10 @@ const (
 	recordingTimeout = 30 * time.Second
 	// statsReadTimeout bounds the read-through to Postgres on a cache miss.
 	statsReadTimeout = 2 * time.Second
+	// dedupKeyTTL is how long Redis remembers an event. It only has to cover
+	// the window in which the provider still retries, not forever - Postgres
+	// keeps the permanent record.
+	dedupKeyTTL = 24 * time.Hour
 )
 
 // Service ingests webhook deliveries.
@@ -78,6 +82,11 @@ func (s *Service) Stats(accountID string) stats.AccountStats {
 // aggregate all happen in one transaction that only one delivery of a given
 // event can win.
 func (s *Service) Ingest(ctx context.Context, evt Event) error {
+	if s.seenRecently(ctx, evt.EventID) {
+		s.log.Info("duplicate delivery ignored (redis)", "event_id", evt.EventID)
+		return nil
+	}
+
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return err
@@ -105,6 +114,11 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 		CallCount:        res.Stats.CallCount,
 		TotalDurationSec: res.Stats.TotalDurationSec,
 	})
+
+	// Only after the transaction has committed. A key written any earlier
+	// could wave through a redelivery of an event whose transaction went on to
+	// fail, losing it for good.
+	s.markSeen(ctx, rec.EventID)
 
 	if res.Duplicate {
 		s.log.Info("duplicate delivery ignored", "event_id", rec.EventID, "call_id", rec.CallID)
@@ -185,4 +199,40 @@ func (s *Service) processRecording(ctx context.Context, rec store.Event) error {
 		return ctx.Err()
 	}
 	return s.store.MarkRecordingProcessed(ctx, rec.CallID)
+}
+
+// dedupKey namespaces the idempotency keys.
+func dedupKey(eventID string) string { return "dedup:event:" + eventID }
+
+// seenRecently asks Redis whether this event has already been committed.
+//
+// Redis is a cache in front of the real check, never the check itself. A hit
+// is trustworthy because the key is only written after the transaction
+// commits, so it means the event is durably stored. A miss proves nothing -
+// keys expire, get evicted, and vanish when Redis restarts - so it falls
+// through to Postgres, where the unique constraint gives the real answer.
+// Every Redis error therefore fails open rather than rejecting a delivery.
+func (s *Service) seenRecently(ctx context.Context, eventID string) bool {
+	if s.rdb == nil {
+		return false
+	}
+	n, err := s.rdb.Exists(ctx, dedupKey(eventID)).Result()
+	if err != nil {
+		s.log.Warn("redis dedup lookup failed, falling through to postgres",
+			"event_id", eventID, "err", err)
+		return false
+	}
+	return n > 0
+}
+
+// markSeen records a committed event so later redeliveries can be answered
+// without touching Postgres. Failing to write it costs a database round trip
+// on the next retry and nothing else, so the error is logged, not returned.
+func (s *Service) markSeen(ctx context.Context, eventID string) {
+	if s.rdb == nil {
+		return
+	}
+	if err := s.rdb.Set(ctx, dedupKey(eventID), "1", dedupKeyTTL).Err(); err != nil {
+		s.log.Warn("redis dedup write failed", "event_id", eventID, "err", err)
+	}
 }
